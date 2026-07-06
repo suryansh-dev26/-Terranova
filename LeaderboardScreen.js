@@ -1,24 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, FlatList, StyleSheet,
-  TouchableOpacity, SafeAreaView, StatusBar, ActivityIndicator,
+  StatusBar, ActivityIndicator,
 } from 'react-native';
-import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore, collection, getDocs } from 'firebase/firestore';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { collection, getDocs } from 'firebase/firestore';
+import { db } from './firebase';
+import { useTheme } from './theme/ThemeProvider';
 
-const firebaseConfig = {
-  apiKey: "AIzaSyBmt-7ejRkjjlNNWvGILlHhouvLwhgN8C4",
-  authDomain: "runrealm3-63bc3.firebaseapp.com",
-  projectId: "runrealm3-63bc3",
-  storageBucket: "runrealm3-63bc3.firebasestorage.app",
-  messagingSenderId: "358048866655",
-  appId: "1:358048866655:web:2152bd778ffc0a71afd6ea",
-  measurementId: "G-4F56HGM34Q"
-};
-
-const firebaseApp = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp);
-
+// Medal accents for the top 3 — deliberately NOT themed: gold/silver/bronze
+// should look like gold/silver/bronze in both light and dark mode.
 const RANK_META = [
   { emoji: '🥇', bg: '#fffbeb', border: '#fde68a', text: '#92400e', labelColor: '#d97706' },
   { emoji: '🥈', bg: '#f8fafc', border: '#e2e8f0', text: '#334155', labelColor: '#64748b' },
@@ -26,6 +17,8 @@ const RANK_META = [
 ];
 
 export default function LeaderboardScreen({ navigation }) {
+  const { theme } = useTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const [players, setPlayers] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -38,7 +31,10 @@ export default function LeaderboardScreen({ navigation }) {
       const grouped = {};
       runs.forEach(run => {
         const uid = run.userId || 'Unknown';
-        if (!grouped[uid]) grouped[uid] = { userId: uid, totalArea: 0, totalDistance: 0, runCount: 0 };
+        if (!grouped[uid]) grouped[uid] = { userId: uid, displayName: null, totalArea: 0, totalDistance: 0, runCount: 0 };
+        // Post-auth runs carry the friendly name; legacy runs' userId already
+        // IS the friendly Runner-XXXX, so the render fallback covers them.
+        if (run.displayName) grouped[uid].displayName = run.displayName;
         grouped[uid].totalArea += run.area || 0;
         grouped[uid].totalDistance += run.distance || 0;
         grouped[uid].runCount += 1;
@@ -82,7 +78,7 @@ export default function LeaderboardScreen({ navigation }) {
 
         {/* Info */}
         <View style={styles.infoBlock}>
-          <Text style={[styles.userId, isTop3 && { color: meta.text }]}>{item.userId}</Text>
+          <Text style={[styles.userId, isTop3 && { color: meta.text }]}>{item.displayName || item.userId}</Text>
           <View style={styles.miniRow}>
             <Text style={styles.miniLabel}>{item.runCount} run{item.runCount !== 1 ? 's' : ''}</Text>
             <Text style={styles.miniDot}>·</Text>
@@ -103,23 +99,17 @@ export default function LeaderboardScreen({ navigation }) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+      <StatusBar barStyle={theme.statusBarStyle} backgroundColor={theme.bg} />
 
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-          <Text style={styles.backText}>← Back</Text>
-        </TouchableOpacity>
         <Text style={styles.title}>Leaderboard</Text>
-        <View style={{ width: 60 }} />
+        <Text style={styles.subtitle}>Most territory captured 🏴</Text>
       </View>
-
-      {/* Subtitle */}
-      <Text style={styles.subtitle}>Most territory captured 🏴</Text>
 
       {loading ? (
         <View style={styles.centered}>
-          <ActivityIndicator color="#6366f1" size="large" />
+          <ActivityIndicator color={theme.primary} size="large" />
           <Text style={styles.loadingText}>Loading...</Text>
         </View>
       ) : players.length === 0 ? (
@@ -141,53 +131,45 @@ export default function LeaderboardScreen({ navigation }) {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: t.bg,
   },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingHorizontal: 20,
+    paddingTop: 64,
     paddingBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f3f4f6',
-  },
-  backBtn: { width: 60 },
-  backText: {
-    color: '#6366f1',
-    fontSize: 15,
-    fontWeight: '600',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: t.hairline,
   },
   title: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#111827',
+    fontSize: 28,
+    fontWeight: '800',
+    color: t.text,
+    letterSpacing: -0.6,
   },
   subtitle: {
-    textAlign: 'center',
     fontSize: 13,
-    color: '#9ca3af',
+    color: t.textMuted,
     fontWeight: '500',
-    paddingVertical: 10,
+    marginTop: 2,
   },
   list: {
     paddingHorizontal: 16,
-    paddingBottom: 24,
+    paddingTop: 12,
+    paddingBottom: 120,
   },
   card: {
-    backgroundColor: '#ffffff',
+    backgroundColor: t.surface,
     borderRadius: 14,
     padding: 14,
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#f3f4f6',
+    borderColor: t.border,
     marginBottom: 10,
-    shadowColor: '#000',
+    shadowColor: t.shadowSoft,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.04,
     shadowRadius: 4,
@@ -197,7 +179,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#f3f4f6',
+    backgroundColor: t.surfaceAlt,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
@@ -206,13 +188,13 @@ const styles = StyleSheet.create({
   rankNumber: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#6b7280',
+    color: t.textDim,
   },
   infoBlock: { flex: 1 },
   userId: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#111827',
+    color: t.text,
     marginBottom: 3,
   },
   miniRow: {
@@ -222,17 +204,17 @@ const styles = StyleSheet.create({
   },
   miniLabel: {
     fontSize: 11,
-    color: '#9ca3af',
+    color: t.textMuted,
     fontWeight: '400',
   },
   miniDot: {
     fontSize: 11,
-    color: '#d1d5db',
+    color: t.textFaint,
   },
   areaBlock: { alignItems: 'flex-end' },
   areaLabel: {
     fontSize: 8,
-    color: '#9ca3af',
+    color: t.textMuted,
     fontWeight: '700',
     letterSpacing: 0.8,
     marginBottom: 2,
@@ -240,7 +222,7 @@ const styles = StyleSheet.create({
   areaValue: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#6366f1',
+    color: t.primary,
   },
   centered: {
     flex: 1,
@@ -249,7 +231,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyEmoji: { fontSize: 40, marginBottom: 8 },
-  loadingText: { color: '#9ca3af', marginTop: 12, fontSize: 14 },
-  emptyText: { color: '#111827', fontSize: 18, fontWeight: '700' },
-  emptySubText: { color: '#9ca3af', fontSize: 14 },
+  loadingText: { color: t.textMuted, marginTop: 12, fontSize: 14 },
+  emptyText: { color: t.text, fontSize: 18, fontWeight: '700' },
+  emptySubText: { color: t.textMuted, fontSize: 14 },
 });

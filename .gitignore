@@ -31,6 +31,7 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
 
 # typescript
@@ -39,3 +40,16 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# local build artifacts & promo media (roadmap P2: never commit these)
+*.apk
+*.aab
+*.mp4
+/photos/
+
+# local tool settings
+.claude/
+
+# firebase emulator logs
+firestore-debug.log
+firebase-debug.log
