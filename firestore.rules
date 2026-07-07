@@ -69,17 +69,24 @@ service cloud.firestore {
       allow delete: if isSignedIn();
     }
 
-    // Profile docs: friendly display name (+ push token, written by the app
-    // when notifications are re-enabled). Public read so leaderboards can map
-    // uid → name; writable only by the owner.
+    // Profile docs: display name, and for signed-in accounts email + photo
+    // (+ push token, written by the app when notifications are re-enabled).
+    // Public read so leaderboards can map uid → name/photo; writable only by
+    // the owner — that includes email, per the account spec.
     match /users/{uid} {
       allow read: if true;
       allow create, update: if isSignedIn()
         && request.auth.uid == uid
-        && request.resource.data.keys().hasOnly(['displayName', 'createdAt', 'pushToken'])
+        && request.resource.data.keys().hasOnly(['displayName', 'email', 'photoURL', 'createdAt', 'pushToken'])
         && request.resource.data.displayName is string
         && request.resource.data.displayName.size() >= 1
         && request.resource.data.displayName.size() <= 50
+        && (!('email' in request.resource.data)
+            || (request.resource.data.email is string
+                && request.resource.data.email.size() <= 254))
+        && (!('photoURL' in request.resource.data)
+            || (request.resource.data.photoURL is string
+                && request.resource.data.photoURL.size() <= 500))
         && (!('pushToken' in request.resource.data) || request.resource.data.pushToken is string);
       allow delete: if false;
     }

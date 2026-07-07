@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, FlatList, StyleSheet,
-  StatusBar, ActivityIndicator,
+  StatusBar, ActivityIndicator, Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from './firebase';
+import { getUserColor } from './lib/geo';
+import { getUserDirectory } from './lib/userDirectory';
 import { useTheme } from './theme/ThemeProvider';
 
 // Medal accents for the top 3 — deliberately NOT themed: gold/silver/bronze
@@ -26,19 +28,29 @@ export default function LeaderboardScreen({ navigation }) {
 
   const fetchAndGroupRuns = async () => {
     try {
-      const snapshot = await getDocs(collection(db, 'runs'));
+      // The directory (users/{uid} → { displayName, photoURL }) is cached for
+      // an hour, so profile lookups don't cost reads on every visit.
+      const [snapshot, directory] = await Promise.all([
+        getDocs(collection(db, 'runs')),
+        getUserDirectory(),
+      ]);
       const runs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       const grouped = {};
       runs.forEach(run => {
         const uid = run.userId || 'Unknown';
         if (!grouped[uid]) grouped[uid] = { userId: uid, displayName: null, totalArea: 0, totalDistance: 0, runCount: 0 };
-        // Post-auth runs carry the friendly name; legacy runs' userId already
-        // IS the friendly Runner-XXXX, so the render fallback covers them.
+        // Denormalized name on the run doc is the fallback; legacy runs'
+        // userId already IS the friendly Runner-XXXX.
         if (run.displayName) grouped[uid].displayName = run.displayName;
         grouped[uid].totalArea += run.area || 0;
         grouped[uid].totalDistance += run.distance || 0;
         grouped[uid].runCount += 1;
       });
+      for (const player of Object.values(grouped)) {
+        const entry = directory[player.userId];
+        if (entry?.displayName) player.displayName = entry.displayName;
+        player.photoURL = entry?.photoURL ?? null;
+      }
       setPlayers(Object.values(grouped).sort((a, b) => b.totalArea - a.totalArea));
     } catch (error) {
       console.error('Error fetching leaderboard:', error);
@@ -75,6 +87,17 @@ export default function LeaderboardScreen({ navigation }) {
             : <Text style={styles.rankNumber}>#{index + 1}</Text>
           }
         </View>
+
+        {/* Avatar: real photo when the runner has one, color-letter otherwise */}
+        {item.photoURL ? (
+          <Image source={{ uri: item.photoURL }} style={styles.avatar} />
+        ) : (
+          <View style={[styles.avatar, { backgroundColor: getUserColor(item.userId).hex }]}>
+            <Text style={styles.avatarInitial}>
+              {(item.displayName || item.userId).charAt(0).toUpperCase()}
+            </Text>
+          </View>
+        )}
 
         {/* Info */}
         <View style={styles.infoBlock}>
@@ -189,6 +212,20 @@ const createStyles = (t) => StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: t.textDim,
+  },
+  avatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    marginRight: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: t.surfaceAlt,
+  },
+  avatarInitial: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: t.onPrimary,
   },
   infoBlock: { flex: 1 },
   userId: {

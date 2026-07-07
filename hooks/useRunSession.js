@@ -4,7 +4,8 @@ import * as Location from 'expo-location';
 import {
   collection, addDoc, deleteDoc, doc, updateDoc, serverTimestamp,
 } from 'firebase/firestore';
-import { db, ensureSignedIn } from '../firebase';
+import { db } from '../firebase';
+import { useAuth } from '../auth/AuthProvider';
 import { useNotification } from '../NotificationContext';
 import {
   getDistanceMeters,
@@ -34,6 +35,11 @@ export const LOOP_CLOSE_RADIUS = 30;
 // camera during a run and recenter on stop.
 export default function useRunSession({ territories, cameraRef, lastRegionRef }) {
   const { notify } = useNotification();
+  // Identity comes from the AuthProvider (the AuthGate guarantees a signed-in
+  // user — guest or real — before any screen using this hook renders).
+  const { user, profile } = useAuth();
+  const userId = user?.uid ?? null;
+  const displayName = profile?.displayName ?? null;
   const [isRunning, setIsRunning] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [location, setLocation] = useState(null);
@@ -41,8 +47,6 @@ export default function useRunSession({ territories, cameraRef, lastRegionRef })
   const [saveStatus, setSaveStatus] = useState('');
   const [totalDistance, setTotalDistance] = useState(0);
   const [area, setArea] = useState(null);
-  const [userId, setUserId] = useState(null);
-  const [displayName, setDisplayName] = useState(null);
   const [dominationMsg, setDominationMsg] = useState('');
   const [loopDetected, setLoopDetected] = useState(false);
   const [distanceToStart, setDistanceToStart] = useState(null);
@@ -59,22 +63,10 @@ export default function useRunSession({ territories, cameraRef, lastRegionRef })
   // closure (the GPS watcher and auto-loop stop outlive many renders).
   const territoriesRef = useRef(territories);
   territoriesRef.current = territories;
-
-  useEffect(() => { loadUser(); }, []);
-
-  // Identity = Firebase Anonymous Auth uid (what security rules enforce and
-  // what runs/territories are keyed by). The friendly Runner-XXXX name lives
-  // in users/{uid}.displayName and is only for display.
-  const loadUser = async () => {
-    try {
-      const { uid, displayName: name } = await ensureSignedIn();
-      setUserId(uid);
-      setDisplayName(name);
-    } catch (e) {
-      // Offline first launch — saveRunToFirestore retries sign-in at save time.
-      console.warn('Anonymous sign-in failed, will retry on save:', e?.message);
-    }
-  };
+  // Same staleness guard for identity: the save flow runs from long-lived
+  // callbacks, so it reads the ref, not the render-time values.
+  const identityRef = useRef({ uid: userId, name: displayName });
+  identityRef.current = { uid: userId, name: displayName };
 
   const requestPermission = async () => {
     const { status } = await Location.requestForegroundPermissionsAsync();
@@ -172,10 +164,8 @@ export default function useRunSession({ territories, cameraRef, lastRegionRef })
   const saveRunToFirestore = async (seconds, coords, distanceMeters, areaSqMeters) => {
     try {
       setSaveStatus('Saving...');
-      // Resolve identity at save time — retries the anonymous sign-in if the
-      // launch-time attempt failed (e.g. app started offline).
-      const { uid, displayName: name } = await ensureSignedIn();
-      if (!userId) { setUserId(uid); setDisplayName(name); }
+      const { uid, name } = identityRef.current;
+      if (!uid) throw new Error('Not signed in');
       await addDoc(collection(db, 'runs'), {
         userId: uid, displayName: name, time: seconds, route: coords,
         distance: Math.round(distanceMeters),

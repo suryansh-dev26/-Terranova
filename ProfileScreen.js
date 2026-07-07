@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet,
-  StatusBar, ActivityIndicator, TouchableOpacity,
+  View, Text, ScrollView, StyleSheet, Image, Modal, TextInput,
+  StatusBar, ActivityIndicator, TouchableOpacity, Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ImagePicker from 'expo-image-picker';
 import { collection, getDocs, query, where } from 'firebase/firestore';
-import { db, ensureSignedIn } from './firebase';
+import { db, uploadAvatar, signOutUser, deleteAccountAndData } from './firebase';
 import { getUserColor } from './lib/geo';
+import { invalidateUserDirectory } from './lib/userDirectory';
+import { useAuth } from './auth/AuthProvider';
 import { useTheme } from './theme/ThemeProvider';
+import { useNotification } from './NotificationContext';
+import { NAME_MIN, NAME_MAX } from './screens/DisplayNameScreen';
 
 const THEME_OPTIONS = [
   { value: 'system', label: 'System' },
@@ -18,21 +23,29 @@ const THEME_OPTIONS = [
 
 export default function ProfileScreen() {
   const { theme, preference, setPreference } = useTheme();
+  const { notify } = useNotification();
+  const { user, profile, isGuest, refreshProfile, applyProfileUpdate, setShowSignIn } = useAuth();
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const [userId, setUserId] = useState(null);
-  const [displayName, setDisplayName] = useState(null);
+
+  const userId = user?.uid ?? null;
+  const displayName = profile?.displayName ?? null;
+
   const [stats, setStats] = useState(null);
   const [recentRuns, setRecentRuns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [savingName, setSavingName] = useState(false);
 
-  useEffect(() => { loadProfile(); }, []);
+  useEffect(() => {
+    if (userId) loadProfileStats(userId);
+  }, [userId]);
 
-  const loadProfile = async () => {
+  const loadProfileStats = async (uid) => {
     try {
-      const { uid, displayName: name } = await ensureSignedIn();
-      setUserId(uid);
-      setDisplayName(name);
-
+      setLoading(true);
       // Runs saved before the auth migration are keyed by the old Runner-XXXX
       // id (still in AsyncStorage) — include them so stats/streak carry over.
       const legacyId = await AsyncStorage.getItem('userId').catch(() => null);
@@ -94,6 +107,101 @@ export default function ProfileScreen() {
     }
     return streak;
   };
+
+  // ── Profile editing ──
+
+  const changePhoto = async () => {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        notify.error('Photo access denied — allow it in Settings to change your picture.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.7,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      setUploadingPhoto(true);
+      await uploadAvatar(result.assets[0].uri);
+      await refreshProfile();
+      invalidateUserDirectory();
+      notify.success('Profile photo updated!');
+    } catch (error) {
+      notify.error(`Couldn't update photo: ${error?.message ?? 'try again.'}`);
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  const openNameEditor = () => {
+    setNameDraft(displayName ?? '');
+    setEditingName(true);
+  };
+
+  const nameDraftTrimmed = nameDraft.trim();
+  const nameValid = nameDraftTrimmed.length >= NAME_MIN && nameDraftTrimmed.length <= NAME_MAX;
+
+  const saveName = async () => {
+    if (!nameValid) {
+      notify.error(`Display name must be ${NAME_MIN}–${NAME_MAX} characters.`);
+      return;
+    }
+    try {
+      setSavingName(true);
+      await applyProfileUpdate({ displayName: nameDraftTrimmed });
+      setEditingName(false);
+      notify.success('Display name updated!');
+    } catch (error) {
+      notify.error(`Couldn't save name: ${error?.message ?? 'try again.'}`);
+    } finally {
+      setSavingName(false);
+    }
+  };
+
+  const handleSignOut = () => {
+    Alert.alert(
+      'Sign out?',
+      'Your runs and territories stay on your account — sign back in anytime.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign out',
+          style: 'destructive',
+          onPress: () => signOutUser().catch((e) => notify.error(e?.message ?? 'Sign out failed.')),
+        },
+      ],
+    );
+  };
+
+  // Play Store data-deletion requirement: two-step confirm, then the
+  // deleteUserData Cloud Function purges everything server-side. The auth
+  // gate takes over (sign-in screen) once the account is gone.
+  const confirmDeleteAccount = () => {
+    Alert.alert(
+      'Delete account and data?',
+      'This permanently deletes your runs, territories, and profile from RunRealm. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete everything', style: 'destructive', onPress: deleteAccount },
+      ],
+    );
+  };
+
+  const deleteAccount = async () => {
+    try {
+      setDeleting(true);
+      await deleteAccountAndData();
+      notify.success('All your data has been deleted.');
+    } catch (error) {
+      notify.error(`Couldn't delete data: ${error?.message ?? 'try again later.'}`);
+      setDeleting(false);
+    }
+  };
+
+  // ── Formatting ──
 
   const formatDistance = (meters) => {
     if (!meters) return '0 m';
@@ -157,12 +265,39 @@ export default function ProfileScreen() {
       >
         {/* Identity */}
         <View style={styles.identity}>
-          <View style={[styles.avatar, { backgroundColor: avatarColor }]}>
-            <Text style={styles.avatarText}>{initial}</Text>
-          </View>
-          <Text style={styles.username}>{displayName ?? 'Unknown'}</Text>
+          <TouchableOpacity
+            onPress={changePhoto}
+            disabled={uploadingPhoto}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Change profile photo"
+          >
+            {profile?.photoURL ? (
+              <Image source={{ uri: profile.photoURL }} style={styles.avatarImage} />
+            ) : (
+              <View style={[styles.avatar, { backgroundColor: avatarColor }]}>
+                <Text style={styles.avatarText}>{initial}</Text>
+              </View>
+            )}
+            <View style={styles.avatarEditBadge}>
+              {uploadingPhoto
+                ? <ActivityIndicator size="small" color={theme.onPrimary} />
+                : <Text style={styles.avatarEditGlyph}>✎</Text>}
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={openNameEditor}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Edit display name"
+          >
+            <Text style={styles.username}>{displayName ?? 'Unknown'} <Text style={styles.editHint}>✎</Text></Text>
+          </TouchableOpacity>
+          {user?.email ? <Text style={styles.emailText}>{user.email}</Text> : null}
           <Text style={styles.usernameSub}>
             {stats?.totalRuns ?? 0} run{stats?.totalRuns === 1 ? '' : 's'} · {formatArea(stats?.totalArea)}
+            {isGuest ? ' · Guest' : ''}
           </Text>
         </View>
 
@@ -237,7 +372,88 @@ export default function ProfileScreen() {
             })}
           </View>
         </View>
+
+        {isGuest ? (
+          <TouchableOpacity
+            style={styles.settingCard}
+            onPress={() => setShowSignIn(true)}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Sign in or create account"
+          >
+            <Text style={styles.upgradeLabel}>Sign in or create account</Text>
+            <Text style={styles.dangerChevron}>›</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={styles.settingCard}
+            onPress={handleSignOut}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out"
+          >
+            <Text style={styles.settingLabel}>Sign out</Text>
+            <Text style={styles.dangerChevron}>›</Text>
+          </TouchableOpacity>
+        )}
+
+        <TouchableOpacity
+          style={styles.settingCard}
+          onPress={confirmDeleteAccount}
+          disabled={deleting}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Delete my account and data"
+        >
+          <Text style={styles.dangerLabel}>
+            {deleting ? 'Deleting your data…' : 'Delete my account and data'}
+          </Text>
+          {deleting
+            ? <ActivityIndicator color={theme.danger} size="small" />
+            : <Text style={styles.dangerChevron}>›</Text>}
+        </TouchableOpacity>
       </ScrollView>
+
+      {/* Display-name editor */}
+      <Modal
+        visible={editingName}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditingName(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Edit display name</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={nameDraft}
+              onChangeText={setNameDraft}
+              maxLength={NAME_MAX}
+              autoFocus
+              autoCapitalize="none"
+              accessibilityLabel="Display name"
+            />
+            <Text style={styles.modalCounter}>
+              {nameDraftTrimmed.length}/{NAME_MAX}
+              {nameDraftTrimmed.length < NAME_MIN ? ` — at least ${NAME_MIN}` : ''}
+            </Text>
+            <View style={styles.modalActions}>
+              <TouchableOpacity onPress={() => setEditingName(false)} disabled={savingName}>
+                <Text style={styles.modalCancel}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalSave, (!nameValid || savingName) && styles.modalSaveDisabled]}
+                onPress={saveName}
+                disabled={!nameValid || savingName}
+              >
+                {savingName
+                  ? <ActivityIndicator size="small" color={theme.onPrimary} />
+                  : <Text style={styles.modalSaveText}>Save</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -295,6 +511,31 @@ const createStyles = (t) => {
       marginBottom: 12,
       ...CARD_SHADOW,
     },
+    avatarImage: {
+      width: 84,
+      height: 84,
+      borderRadius: 42,
+      marginBottom: 12,
+      backgroundColor: t.surfaceAlt,
+    },
+    avatarEditBadge: {
+      position: 'absolute',
+      right: -2,
+      bottom: 10,
+      width: 26,
+      height: 26,
+      borderRadius: 13,
+      backgroundColor: t.primary,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 2,
+      borderColor: t.bg,
+    },
+    avatarEditGlyph: {
+      color: t.onPrimary,
+      fontSize: 12,
+      fontWeight: '700',
+    },
     avatarText: {
       fontSize: 36,
       fontWeight: '800',
@@ -305,6 +546,16 @@ const createStyles = (t) => {
       fontWeight: '800',
       color: t.text,
       letterSpacing: -0.4,
+    },
+    editHint: {
+      fontSize: 14,
+      color: t.textMuted,
+    },
+    emailText: {
+      fontSize: 12,
+      color: t.textMuted,
+      fontWeight: '500',
+      marginTop: 2,
     },
     usernameSub: {
       fontSize: 13,
@@ -422,6 +673,11 @@ const createStyles = (t) => {
       fontWeight: '700',
       color: t.text,
     },
+    upgradeLabel: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: t.primary,
+    },
     themeOptions: {
       flexDirection: 'row',
       backgroundColor: t.surfaceAlt,
@@ -449,6 +705,80 @@ const createStyles = (t) => {
     },
     themeOptionTextActive: {
       color: t.primary,
+      fontWeight: '700',
+    },
+    dangerLabel: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: t.danger,
+    },
+    dangerChevron: {
+      fontSize: 18,
+      fontWeight: '700',
+      color: t.textMuted,
+    },
+
+    // Name editor modal
+    modalBackdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(0,0,0,0.45)',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 28,
+    },
+    modalCard: {
+      width: '100%',
+      backgroundColor: t.surface,
+      borderRadius: 18,
+      padding: 20,
+      gap: 8,
+    },
+    modalTitle: {
+      fontSize: 17,
+      fontWeight: '800',
+      color: t.text,
+      letterSpacing: -0.3,
+    },
+    modalInput: {
+      backgroundColor: t.bg,
+      borderWidth: 1,
+      borderColor: t.border,
+      borderRadius: 12,
+      paddingVertical: 12,
+      paddingHorizontal: 14,
+      fontSize: 16,
+      fontWeight: '600',
+      color: t.text,
+    },
+    modalCounter: {
+      fontSize: 11,
+      color: t.textMuted,
+      textAlign: 'right',
+    },
+    modalActions: {
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      alignItems: 'center',
+      gap: 18,
+      marginTop: 4,
+    },
+    modalCancel: {
+      fontSize: 14,
+      fontWeight: '600',
+      color: t.textDim,
+    },
+    modalSave: {
+      backgroundColor: t.primary,
+      borderRadius: 10,
+      paddingVertical: 10,
+      paddingHorizontal: 20,
+      minWidth: 74,
+      alignItems: 'center',
+    },
+    modalSaveDisabled: { opacity: 0.55 },
+    modalSaveText: {
+      color: t.onPrimary,
+      fontSize: 14,
       fontWeight: '700',
     },
 

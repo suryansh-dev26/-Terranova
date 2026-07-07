@@ -1,13 +1,16 @@
-import { LogBox } from 'react-native';
+import { ActivityIndicator, LogBox, View } from 'react-native';
 import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import HomeScreen from './screens/HomeScreen';
 import HistoryScreen from './HistoryScreen';
 import LeaderboardScreen from './LeaderboardScreen';
 import ProfileScreen from './ProfileScreen';
+import SignInScreen from './screens/SignInScreen';
+import DisplayNameScreen from './screens/DisplayNameScreen';
 import FloatingTabBar from './components/FloatingTabBar';
 import RootErrorBoundary from './components/RootErrorBoundary';
 import { NotificationProvider } from './NotificationContext';
+import { AuthProvider, useAuth } from './auth/AuthProvider';
 import { ThemeProvider, useTheme } from './theme/ThemeProvider';
 
 // Firestore's realtime transport logs noisy connection warnings on React
@@ -54,14 +57,35 @@ function AppNavigator() {
   );
 }
 
+// Routes between session-restore splash, sign-in, the pick-a-name step for
+// first-time email users, and the app itself. Guests re-enter the sign-in
+// screen via Profile → "Sign in or create account" (showSignIn).
+function AuthGate() {
+  const { theme } = useTheme();
+  const { initializing, user, needsDisplayName, showSignIn } = useAuth();
+
+  if (initializing) {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.bg, alignItems: 'center', justifyContent: 'center' }}>
+        <ActivityIndicator color={theme.primary} size="large" />
+      </View>
+    );
+  }
+  if (!user || showSignIn) return <SignInScreen />;
+  if (needsDisplayName) return <DisplayNameScreen />;
+  return <AppNavigator />;
+}
+
 // Thin shell: theming outermost, then the crash catch-all, then app chrome.
-// All real logic lives in screens/, hooks/, components/, and firebase.js.
+// All real logic lives in screens/, hooks/, components/, auth/, and firebase.js.
 export default function App() {
   return (
     <ThemeProvider>
       <RootErrorBoundary>
         <NotificationProvider>
-          <AppNavigator />
+          <AuthProvider>
+            <AuthGate />
+          </AuthProvider>
         </NotificationProvider>
       </RootErrorBoundary>
     </ThemeProvider>
