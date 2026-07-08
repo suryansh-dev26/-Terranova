@@ -1,11 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, FlatList, StyleSheet,
-  TouchableOpacity, SafeAreaView, StatusBar, ActivityIndicator,
+  StatusBar, ActivityIndicator,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { collection, getDocs, orderBy, query } from 'firebase/firestore';
+import { db } from './firebase';
+import { useTheme } from './theme/ThemeProvider';
 
-export default function HistoryScreen({ navigation, db }) {
+export default function HistoryScreen({ navigation }) {
+  const { theme } = useTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -82,19 +87,16 @@ export default function HistoryScreen({ navigation, db }) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+      <StatusBar barStyle={theme.statusBarStyle} backgroundColor={theme.bg} />
 
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-          <Text style={styles.backText}>← Back</Text>
-        </TouchableOpacity>
         <Text style={styles.title}>Run History</Text>
-        <View style={{ width: 60 }} />
+        <Text style={styles.headerSub}>{runs.length} {runs.length === 1 ? 'run' : 'runs'} logged</Text>
       </View>
 
       {loading ? (
         <View style={styles.centered}>
-          <ActivityIndicator color="#6366f1" size="large" />
+          <ActivityIndicator color={theme.primary} size="large" />
           <Text style={styles.loadingText}>Loading runs...</Text>
         </View>
       ) : runs.length === 0 ? (
@@ -116,56 +118,55 @@ export default function HistoryScreen({ navigation, db }) {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: t.bg,
   },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingHorizontal: 20,
+    paddingTop: 64,
     paddingBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f3f4f6',
-  },
-  backBtn: { width: 60 },
-  backText: {
-    color: '#6366f1',
-    fontSize: 15,
-    fontWeight: '600',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: t.hairline,
   },
   title: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#111827',
+    fontSize: 28,
+    fontWeight: '800',
+    color: t.text,
+    letterSpacing: -0.6,
+  },
+  headerSub: {
+    fontSize: 13,
+    color: t.textMuted,
+    fontWeight: '500',
+    marginTop: 2,
   },
   list: {
     padding: 16,
+    paddingBottom: 120,
     gap: 10,
   },
   card: {
-    backgroundColor: '#ffffff',
+    backgroundColor: t.surface,
     borderRadius: 14,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#f3f4f6',
+    borderColor: t.border,
     marginBottom: 10,
-    shadowColor: '#000',
+    shadowColor: t.shadowSoft,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.04,
     shadowRadius: 4,
     elevation: 1,
   },
   cardLatest: {
-    borderColor: '#e0e7ff',
-    backgroundColor: '#fafbff',
+    borderColor: t.latestBorder,
+    backgroundColor: t.latestBg,
   },
   latestBadge: {
     alignSelf: 'flex-start',
-    backgroundColor: '#eef2ff',
+    backgroundColor: t.primarySoft,
     paddingVertical: 3,
     paddingHorizontal: 8,
     borderRadius: 20,
@@ -173,7 +174,7 @@ const styles = StyleSheet.create({
   },
   latestBadgeText: {
     fontSize: 10,
-    color: '#6366f1',
+    color: t.primary,
     fontWeight: '700',
     letterSpacing: 0.3,
   },
@@ -185,18 +186,18 @@ const styles = StyleSheet.create({
   runNumber: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#111827',
+    color: t.text,
     marginBottom: 3,
   },
   date: {
     fontSize: 12,
-    color: '#9ca3af',
+    color: t.textMuted,
     fontWeight: '400',
   },
   timeBlock: { alignItems: 'flex-end' },
   timeLabel: {
     fontSize: 8,
-    color: '#9ca3af',
+    color: t.textMuted,
     fontWeight: '700',
     letterSpacing: 0.8,
     marginBottom: 2,
@@ -204,12 +205,12 @@ const styles = StyleSheet.create({
   timeValue: {
     fontSize: 22,
     fontWeight: '800',
-    color: '#6366f1',
+    color: t.primary,
     letterSpacing: -0.5,
   },
   cardDivider: {
     height: 1,
-    backgroundColor: '#f3f4f6',
+    backgroundColor: t.border,
     marginVertical: 12,
   },
   cardStats: {
@@ -219,7 +220,7 @@ const styles = StyleSheet.create({
   miniStat: {},
   miniStatLabel: {
     fontSize: 8,
-    color: '#9ca3af',
+    color: t.textMuted,
     fontWeight: '700',
     letterSpacing: 0.8,
     marginBottom: 2,
@@ -227,7 +228,7 @@ const styles = StyleSheet.create({
   miniStatValue: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#374151',
+    color: t.textStrong,
   },
   centered: {
     flex: 1,
@@ -236,7 +237,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyEmoji: { fontSize: 40, marginBottom: 8 },
-  loadingText: { color: '#9ca3af', marginTop: 12, fontSize: 14 },
-  emptyText: { color: '#111827', fontSize: 18, fontWeight: '700' },
-  emptySubText: { color: '#9ca3af', fontSize: 14 },
+  loadingText: { color: t.textMuted, marginTop: 12, fontSize: 14 },
+  emptyText: { color: t.text, fontSize: 18, fontWeight: '700' },
+  emptySubText: { color: t.textMuted, fontSize: 14 },
 });

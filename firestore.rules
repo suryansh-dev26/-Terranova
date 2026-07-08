@@ -1,0 +1,121 @@
+rules_version = '2';
+
+// RunRealm3 security rules. Threat model + rationale in SECURITY.md.
+//
+// Identity: Firebase Anonymous Auth. Every write is tied to request.auth.uid;
+// clients can no longer pick an arbitrary userId. There is no server-side
+// code (Spark plan, no Cloud Functions) — these rules are the only boundary.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Runs are append-only workout records. Public read (leaderboard +
+    // history aggregate over everyone's runs), create only as yourself with
+    // sane field bounds, never mutable after the fact.
+    match /runs/{runId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasAll(['userId', 'route', 'distance', 'area', 'time', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['userId', 'route', 'distance', 'area', 'time', 'createdAt', 'displayName', 'country', 'region', 'city'])
+        && request.resource.data.userId is string
+        && request.resource.data.route is list
+        && request.resource.data.route.size() <= 10000
+        && request.resource.data.distance is int
+        && request.resource.data.distance >= 0
+        && request.resource.data.distance <= 100000000
+        && request.resource.data.area is int
+        && request.resource.data.area >= 0
+        && request.resource.data.area <= 10000000000
+        && request.resource.data.time is int
+        && request.resource.data.time >= 0
+        && request.resource.data.time <= 1000000
+        && request.resource.data.createdAt == request.time
+        && (!('displayName' in request.resource.data) || request.resource.data.displayName is string)
+        && (!('country' in request.resource.data)
+            || (request.resource.data.country is string
+                && request.resource.data.country.size() <= 3))
+        && (!('region' in request.resource.data)
+            || (request.resource.data.region is string
+                && request.resource.data.region.size() <= 100))
+        && (!('city' in request.resource.data)
+            || (request.resource.data.city is string
+                && request.resource.data.city.size() <= 100));
+      allow update: if false;
+      // Owners may delete their own runs: with no Cloud Functions on the
+      // Spark plan, the in-app "delete my account and data" purge runs
+      // client-side. Nobody can touch anyone else's history.
+      allow delete: if isSignedIn() && request.auth.uid == resource.data.userId;
+    }
+
+    // Territories are the shared game board. Creating one requires owning it;
+    // cutting (update) or capturing (delete) an enemy territory is core
+    // gameplay, so any signed-in user may do it — but an update can only
+    // shrink the polygon, never grow it or reassign its owner. Server-side
+    // geometry validation (anti-cheat) is a planned follow-up; see SECURITY.md.
+    match /territories/{territoryId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasAll(['userId', 'polygon', 'area', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['userId', 'polygon', 'area', 'createdAt', 'displayName'])
+        && request.resource.data.userId is string
+        && request.resource.data.polygon is list
+        && request.resource.data.polygon.size() >= 4
+        && request.resource.data.polygon.size() <= 10000
+        && request.resource.data.area is int
+        && request.resource.data.area >= 0
+        && request.resource.data.area <= 10000000000
+        && request.resource.data.createdAt == request.time
+        && (!('displayName' in request.resource.data) || request.resource.data.displayName is string);
+      allow update: if isSignedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['polygon', 'area'])
+        && request.resource.data.polygon is list
+        && request.resource.data.polygon.size() >= 4
+        && request.resource.data.polygon.size() <= 10000
+        && request.resource.data.area is int
+        && request.resource.data.area >= 0
+        && request.resource.data.area <= resource.data.area;
+      allow delete: if isSignedIn();
+    }
+
+    // Profile docs: display name, and for signed-in accounts email + photo
+    // (photoURL comes from the Google account — no Storage on the Spark
+    // plan). Public read so leaderboards can map uid → name/photo; writable
+    // only by the owner — that includes email, per the account spec.
+    match /users/{uid} {
+      allow read: if true;
+      allow create, update: if isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['displayName', 'email', 'photoURL', 'createdAt', 'country', 'region', 'city'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() >= 1
+        && request.resource.data.displayName.size() <= 50
+        && (!('email' in request.resource.data)
+            || (request.resource.data.email is string
+                && request.resource.data.email.size() <= 254))
+        && (!('photoURL' in request.resource.data)
+            || (request.resource.data.photoURL is string
+                && request.resource.data.photoURL.size() <= 500))
+        && (!('country' in request.resource.data)
+            || (request.resource.data.country is string
+                && request.resource.data.country.size() <= 3))
+        && (!('region' in request.resource.data)
+            || (request.resource.data.region is string
+                && request.resource.data.region.size() <= 100))
+        && (!('city' in request.resource.data)
+            || (request.resource.data.city is string
+                && request.resource.data.city.size() <= 100));
+      // Owner-deletable for the client-side account-deletion flow.
+      allow delete: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Everything else (including the legacy pushTokens collection): deny.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

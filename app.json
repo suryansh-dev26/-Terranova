@@ -3,9 +3,10 @@
     "name": "RunRealm3",
     "slug": "RunRealm3",
     "version": "1.0.0",
+    "scheme": "runrealm",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -14,17 +15,37 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.RunRealm3"
+      "bundleIdentifier": "com.suryansh.runrealm",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.suryansh.runrealm",
+      "versionCode": 1,
+      "blockedPermissions": [
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "059e61b2-e23a-446d-8190-2ac039efb861"
+      },
+      "googleAuth": {
+        "webClientId": "",
+        "iosClientId": "",
+        "androidClientId": ""
+      }
     }
   }
 }
