@@ -3,8 +3,8 @@ rules_version = '2';
 // RunRealm3 security rules. Threat model + rationale in SECURITY.md.
 //
 // Identity: Firebase Anonymous Auth. Every write is tied to request.auth.uid;
-// clients can no longer pick an arbitrary userId. Cloud Functions use the
-// Admin SDK, which bypasses these rules by design.
+// clients can no longer pick an arbitrary userId. There is no server-side
+// code (Spark plan, no Cloud Functions) — these rules are the only boundary.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -20,7 +20,7 @@ service cloud.firestore {
       allow create: if isSignedIn()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.keys().hasAll(['userId', 'route', 'distance', 'area', 'time', 'createdAt'])
-        && request.resource.data.keys().hasOnly(['userId', 'route', 'distance', 'area', 'time', 'createdAt', 'displayName'])
+        && request.resource.data.keys().hasOnly(['userId', 'route', 'distance', 'area', 'time', 'createdAt', 'displayName', 'country', 'region', 'city'])
         && request.resource.data.userId is string
         && request.resource.data.route is list
         && request.resource.data.route.size() <= 10000
@@ -34,8 +34,21 @@ service cloud.firestore {
         && request.resource.data.time >= 0
         && request.resource.data.time <= 1000000
         && request.resource.data.createdAt == request.time
-        && (!('displayName' in request.resource.data) || request.resource.data.displayName is string);
-      allow update, delete: if false;
+        && (!('displayName' in request.resource.data) || request.resource.data.displayName is string)
+        && (!('country' in request.resource.data)
+            || (request.resource.data.country is string
+                && request.resource.data.country.size() <= 3))
+        && (!('region' in request.resource.data)
+            || (request.resource.data.region is string
+                && request.resource.data.region.size() <= 100))
+        && (!('city' in request.resource.data)
+            || (request.resource.data.city is string
+                && request.resource.data.city.size() <= 100));
+      allow update: if false;
+      // Owners may delete their own runs: with no Cloud Functions on the
+      // Spark plan, the in-app "delete my account and data" purge runs
+      // client-side. Nobody can touch anyone else's history.
+      allow delete: if isSignedIn() && request.auth.uid == resource.data.userId;
     }
 
     // Territories are the shared game board. Creating one requires owning it;
@@ -70,14 +83,14 @@ service cloud.firestore {
     }
 
     // Profile docs: display name, and for signed-in accounts email + photo
-    // (+ push token, written by the app when notifications are re-enabled).
-    // Public read so leaderboards can map uid → name/photo; writable only by
-    // the owner — that includes email, per the account spec.
+    // (photoURL comes from the Google account — no Storage on the Spark
+    // plan). Public read so leaderboards can map uid → name/photo; writable
+    // only by the owner — that includes email, per the account spec.
     match /users/{uid} {
       allow read: if true;
       allow create, update: if isSignedIn()
         && request.auth.uid == uid
-        && request.resource.data.keys().hasOnly(['displayName', 'email', 'photoURL', 'createdAt', 'pushToken'])
+        && request.resource.data.keys().hasOnly(['displayName', 'email', 'photoURL', 'createdAt', 'country', 'region', 'city'])
         && request.resource.data.displayName is string
         && request.resource.data.displayName.size() >= 1
         && request.resource.data.displayName.size() <= 50
@@ -87,8 +100,17 @@ service cloud.firestore {
         && (!('photoURL' in request.resource.data)
             || (request.resource.data.photoURL is string
                 && request.resource.data.photoURL.size() <= 500))
-        && (!('pushToken' in request.resource.data) || request.resource.data.pushToken is string);
-      allow delete: if false;
+        && (!('country' in request.resource.data)
+            || (request.resource.data.country is string
+                && request.resource.data.country.size() <= 3))
+        && (!('region' in request.resource.data)
+            || (request.resource.data.region is string
+                && request.resource.data.region.size() <= 100))
+        && (!('city' in request.resource.data)
+            || (request.resource.data.city is string
+                && request.resource.data.city.size() <= 100));
+      // Owner-deletable for the client-side account-deletion flow.
+      allow delete: if isSignedIn() && request.auth.uid == uid;
     }
 
     // Everything else (including the legacy pushTokens collection): deny.

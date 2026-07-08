@@ -53,34 +53,33 @@
       when no run is active.</td>
     </tr>
     <tr>
-      <td><strong>Anonymous user ID</strong></td>
+      <td><strong>Account identity</strong></td>
       <td>Created on first launch</td>
-      <td>A random Firebase Anonymous Auth identifier that ties your runs and
-      territories together. No name, email, phone number, or sign-up is
-      required or requested.</td>
+      <td>A random Firebase identifier ties your runs and territories
+      together. Signing up is optional: guests never provide a name, email,
+      or phone number. If you choose to sign in, we store your email address
+      and — for Google sign-in — your Google display name and profile photo
+      URL.</td>
     </tr>
     <tr>
       <td><strong>Display name</strong></td>
-      <td>Generated on first launch (e.g. "Runner-A1B2")</td>
+      <td>Generated on first launch (e.g. "Runner-A1B2"), or taken from your
+      Google account / chosen by you when signing in</td>
       <td>Shown on the leaderboard and territory map instead of your ID.</td>
     </tr>
     <tr>
       <td><strong>Run statistics</strong></td>
       <td>When a run is saved</td>
-      <td>Route trace, distance, duration, captured area, and timestamp — the
-      gameplay content of the app.</td>
-    </tr>
-    <tr>
-      <td><strong>Push token (optional)</strong></td>
-      <td>Only if notifications are enabled</td>
-      <td>To notify you when another runner captures your territory.</td>
+      <td>Route trace, distance, duration, captured area, approximate place
+      (country/region/city), and timestamp — the gameplay content of the
+      app.</td>
     </tr>
   </table>
 
-  <p>We do <strong>not</strong> collect: your name, email address, phone
-  number, contacts, photos, advertising identifiers, or any data from other
-  apps. The app contains no ads and no third-party analytics or tracking
-  SDKs.</p>
+  <p>Beyond the optional account details above, we do <strong>not</strong>
+  collect: contacts, photos, advertising identifiers, push tokens, or any
+  data from other apps. The app contains no ads, no push notifications, and
+  no third-party analytics or tracking SDKs.</p>
 
   <h2>How your data is used</h2>
   <ul>
@@ -90,8 +89,9 @@
     <li><strong>Leaderboards</strong> — total captured area, run count, and
     distance are ranked against other players, labelled with your display
     name.</li>
-    <li><strong>Notifications</strong> — your push token is used solely to send
-    territory-attack alerts to your own device.</li>
+    <li><strong>In-app alerts</strong> — when another runner captures your
+    territory you see a notice inside the app. We send no push notifications
+    and store no push tokens.</li>
   </ul>
   <p>Your data is never used for advertising, profiling, or any purpose other
   than running the game.</p>
@@ -115,8 +115,7 @@
   <p>You can delete everything, at any time, without contacting anyone:</p>
   <blockquote>Profile → "Delete my account and data"</blockquote>
   <p>This permanently and irreversibly deletes your runs, routes, territories,
-  profile, push token, and the anonymous account itself from our servers. The
-  app then continues under a brand-new anonymous identity with no history.</p>
+  profile, and the account itself from our servers.</p>
   <p>If you have already uninstalled the app, reinstall it and use the same
   button, or email us (below) and we will delete your data manually — include
   your display name (e.g. "Runner-A1B2") so we can locate it.</p>

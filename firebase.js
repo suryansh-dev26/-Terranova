@@ -1,10 +1,15 @@
 // Single Firebase entry point for RunRealm3. Every screen imports { db } (and
 // auth/account helpers) from here — do NOT call initializeApp/initializeFirestore
 // anywhere else, or config changes will drift between copies.
+//
+// Spark-plan constraint: this app uses NO Cloud Functions and NO Firebase
+// Storage. Account deletion runs client-side (see deleteAccountAndData),
+// avatars come from the Google account's photoURL, and there is no
+// guest-data migration or push notification backend.
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   initializeFirestore, getFirestore, collection, doc, getDoc, getDocs,
-  query, where, limit, setDoc, serverTimestamp,
+  query, where, limit, setDoc, deleteDoc, writeBatch, serverTimestamp,
 } from 'firebase/firestore';
 import {
   initializeAuth, getAuth, getReactNativePersistence,
@@ -13,14 +18,12 @@ import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
   sendPasswordResetEmail,
 } from 'firebase/auth';
-import { getFunctions, httpsCallable } from 'firebase/functions';
-import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { generateUserId } from './lib/geo';
 
 // This config is public by design (it identifies the project, it doesn't grant
-// access) — firestore.rules / storage.rules are the security boundary.
+// access) — firestore.rules is the security boundary.
 const firebaseConfig = {
   apiKey: "AIzaSyBmt-7ejRkjjlNNWvGILlHhouvLwhgN8C4",
   authDomain: "runrealm3-63bc3.firebaseapp.com",
@@ -53,9 +56,6 @@ try {
   auth = getAuth(app);
 }
 
-const storage = getStorage(app);
-const functionsInstance = getFunctions(app);
-
 // AsyncStorage keys. 'userId' is the pre-auth Runner-XXXX id and 'displayName'
 // the pre-accounts global name cache — both read-only legacy inputs now.
 // Profiles are cached per-uid so switching accounts can't leak names across.
@@ -87,6 +87,9 @@ const writeCachedProfile = async (uid, profile) => {
     displayName: profile.displayName,
     email: profile.email,
     photoURL: profile.photoURL,
+    country: profile.country,
+    region: profile.region,
+    city: profile.city,
   });
   await AsyncStorage.setItem(profileCacheKey(uid), JSON.stringify(compact)).catch(() => {});
   return compact;
@@ -109,7 +112,8 @@ function getInitialUser() {
 
 // Returns the user's profile, creating it when needed:
 // - guests get a friendly Runner-XXXX (kept from pre-auth installs if present),
-// - Google accounts are seeded from { displayName, email, photoURL },
+// - Google accounts are seeded from { displayName, email, photoURL } — the
+//   photo is the Google one; there is no in-app upload on the Spark plan,
 // - email accounts without a name yet get { needsDisplayName: true } and the
 //   AuthGate shows the pick-a-name step before entering the app.
 async function ensureUserProfile(user) {
@@ -152,7 +156,7 @@ async function ensureUserProfile(user) {
   return { displayName: null, email: user.email ?? null, needsDisplayName: true };
 }
 
-// Fresh read (bypasses cache) — used after edits/migration.
+// Fresh read (bypasses cache) — used after edits.
 async function fetchProfile(uid) {
   const snapshot = await getDoc(doc(db, 'users', uid));
   if (!snapshot.exists()) return null;
@@ -167,20 +171,6 @@ async function updateProfileFields(fields) {
   await setDoc(doc(db, 'users', user.uid), compact, { merge: true });
   const cached = (await readCachedProfile(user.uid)) || {};
   return writeCachedProfile(user.uid, { ...cached, ...compact });
-}
-
-// Avatar upload: Storage path users/{uid}/avatar.jpg (owner-writable per
-// storage.rules), then the download URL is saved to users/{uid}.photoURL.
-async function uploadAvatar(localUri) {
-  const user = auth.currentUser;
-  if (!user) throw new Error('Not signed in');
-  const response = await fetch(localUri);
-  const blob = await response.blob();
-  const avatarRef = storageRef(storage, `users/${user.uid}/avatar.jpg`);
-  await uploadBytes(avatarRef, blob, { contentType: 'image/jpeg' });
-  const photoURL = await getDownloadURL(avatarRef);
-  await updateProfileFields({ photoURL });
-  return photoURL;
 }
 
 // ─── Sign-in flows ──────────────────────────────────────────────────────────
@@ -202,77 +192,25 @@ function ensureSignedIn() {
   return inflightSignIn;
 }
 
-// Before switching from a guest session to a real account, capture proof of
-// the guest identity (its ID token, valid ~1h). migrateGuestData verifies it
-// server-side, so users can only import data they actually own.
-let guestSession = null;
-
-async function stashGuestSession() {
-  const user = auth.currentUser;
-  if (!user || !user.isAnonymous) return;
-  try {
-    const token = await user.getIdToken();
-    const legacyId = await AsyncStorage.getItem(LEGACY_ID_KEY).catch(() => null);
-    guestSession = { uid: user.uid, token, legacyId };
-  } catch {
-    guestSession = null;
-  }
-}
-
-const peekGuestSession = () => guestSession;
-const dropGuestSession = () => { guestSession = null; };
-
-// Quick public-read probe: does the stashed guest identity own any docs?
-// Decides whether the "Import my guest data?" prompt is worth showing.
-async function guestHasData(guest) {
-  const ids = guest.legacyId && guest.legacyId !== guest.uid
-    ? [guest.uid, guest.legacyId]
-    : [guest.uid];
-  try {
-    for (const collectionName of ['runs', 'territories']) {
-      const snap = await getDocs(
-        query(collection(db, collectionName), where('userId', 'in', ids), limit(1)),
-      );
-      if (!snap.empty) return true;
-    }
-  } catch {}
-  return false;
-}
-
-// Rewrites the guest's docs onto the current (real) account via the
-// migrateGuestData Cloud Function, then discards the stash.
-async function importGuestData(guest) {
-  try {
-    await httpsCallable(functionsInstance, 'migrateGuestData')({
-      guestIdToken: guest.token,
-      legacyId: guest.legacyId,
-    });
-  } finally {
-    dropGuestSession();
-    clearCachedProfile(guest.uid);
-  }
-}
-
-async function signInWithGoogleIdToken(idToken) {
-  await stashGuestSession();
+// NOTE: signing in from a guest session starts a fresh account. There is no
+// guest-data migration on the Spark plan (it needed a Cloud Function to
+// rewrite doc ownership); the SignInScreen warns guests before they proceed.
+function signInWithGoogleIdToken(idToken) {
   return signInWithCredential(auth, GoogleAuthProvider.credential(idToken));
 }
 
-async function signInWithEmail(email, password) {
-  await stashGuestSession();
+function signInWithEmail(email, password) {
   return signInWithEmailAndPassword(auth, email.trim(), password);
 }
 
-async function signUpWithEmail(email, password) {
-  await stashGuestSession();
+function signUpWithEmail(email, password) {
   return createUserWithEmailAndPassword(auth, email.trim(), password);
 }
 
 const resetPassword = (email) => sendPasswordResetEmail(auth, email.trim());
 
-async function signOutUser() {
-  dropGuestSession();
-  await signOut(auth);
+function signOutUser() {
+  return signOut(auth);
 }
 
 // Google OAuth client ids live in app.json extra.googleAuth — they're created
@@ -289,28 +227,55 @@ function getGoogleAuthConfig() {
   return { ...config, enabled: hasAnyClientId };
 }
 
-// ─── Account deletion ───────────────────────────────────────────────────────
+// ─── Account deletion (client-side, Spark plan) ─────────────────────────────
 
-// Play Store data-deletion requirement: the deleteUserData Cloud Function
-// purges the caller's runs, territories, and profile server-side (Admin SDK),
-// then deletes the auth account. Afterwards we drop every local trace; the
-// AuthGate takes over and shows the sign-in screen.
+// Play Store data-deletion requirement without Cloud Functions: the client
+// purges everything it owns under the owner-delete rules (runs, territories,
+// users/{uid} — add badges/challenges here when those collections ship),
+// then deletes the auth account itself.
+const PURGE_BATCH = 400;
+
 async function deleteAccountAndData() {
-  const { uid } = await ensureSignedIn();
-  const legacyId = await AsyncStorage.getItem(LEGACY_ID_KEY).catch(() => null);
-  await httpsCallable(functionsInstance, 'deleteUserData')({ legacyId });
-  dropGuestSession();
+  const user = auth.currentUser;
+  if (!user) throw new Error('Not signed in');
+  const uid = user.uid;
+
+  for (const collectionName of ['runs', 'territories']) {
+    // Batched deletes, looping until the query drains (500-write batch cap).
+    for (;;) {
+      const snap = await getDocs(query(
+        collection(db, collectionName),
+        where('userId', '==', uid),
+        limit(PURGE_BATCH),
+      ));
+      if (snap.empty) break;
+      const batch = writeBatch(db);
+      snap.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+      await batch.commit();
+      if (snap.size < PURGE_BATCH) break;
+    }
+  }
+  await deleteDoc(doc(db, 'users', uid));
+
   await AsyncStorage.multiRemove([LEGACY_ID_KEY, LEGACY_NAME_KEY]).catch(() => {});
   await clearCachedProfile(uid);
-  // The server already deleted the auth user, so the local session token is
-  // dead either way — signOut just clears it faster.
-  await signOut(auth).catch(() => {});
+
+  // Deleting the auth record can demand a recent sign-in (Firebase client
+  // policy, typically for older Google/email sessions). The data is already
+  // gone either way — report back so the UI can say "sign in again to finish
+  // removing the account".
+  try {
+    await user.delete(); // also signs out → AuthGate shows the sign-in screen
+    return { authDeleted: true };
+  } catch {
+    await signOut(auth).catch(() => {});
+    return { authDeleted: false };
+  }
 }
 
 export {
-  app, db, auth, storage,
-  ensureSignedIn, ensureUserProfile, fetchProfile, updateProfileFields, uploadAvatar,
+  app, db, auth,
+  ensureSignedIn, ensureUserProfile, fetchProfile, updateProfileFields,
   signInWithGoogleIdToken, signInWithEmail, signUpWithEmail, resetPassword, signOutUser,
-  peekGuestSession, dropGuestSession, guestHasData, importGuestData,
   getGoogleAuthConfig, deleteAccountAndData,
 };

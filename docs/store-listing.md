@@ -29,7 +29,7 @@ No buttons to fiddle with mid-run. The moment your route loops back to where you
 Your loops become territory — real polygons on a map every player shares. Run overlapping loops and they merge into one growing empire.
 
 **⚔️ INVADE YOUR RIVALS**
-Territory isn't safe. Run through another player's land and you'll cut a piece out of it. Surround it completely and you take it all — they get a "Territory Invaded!" notification, you get their streets. Defend what's yours by running it again.
+Territory isn't safe. Run through another player's land and you'll cut a piece out of it. Surround it completely and you take it all — they'll see the invasion on their map, you get their streets. Defend what's yours by running it again.
 
 **🏆 CLIMB THE LEADERBOARD**
 Every square metre counts. Compete with runners everywhere for the most captured area, and keep your daily streak alive — miss a day and it resets.

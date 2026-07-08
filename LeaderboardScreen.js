@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, FlatList, StyleSheet,
-  StatusBar, ActivityIndicator, Image,
+  StatusBar, ActivityIndicator, Image, TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from './firebase';
 import { getUserColor } from './lib/geo';
 import { getUserDirectory } from './lib/userDirectory';
+import { getLastKnownPlace } from './lib/geocode';
+import { useAuth } from './auth/AuthProvider';
 import { useTheme } from './theme/ThemeProvider';
 
 // Medal accents for the top 3 — deliberately NOT themed: gold/silver/bronze
@@ -18,46 +20,91 @@ const RANK_META = [
   { emoji: '🥉', bg: '#fff7ed', border: '#fed7aa', text: '#9a3412', labelColor: '#ea580c' },
 ];
 
+const SCOPES = [
+  { value: 'global', label: 'Global' },
+  { value: 'country', label: 'Country' },
+  { value: 'city', label: 'City' },
+];
+
 export default function LeaderboardScreen({ navigation }) {
   const { theme } = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const [players, setPlayers] = useState([]);
+  const { profile } = useAuth();
+  const [runs, setRuns] = useState([]);
+  const [directory, setDirectory] = useState({});
+  const [scope, setScope] = useState('global');
+  const [lastPlace, setLastPlace] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => { fetchAndGroupRuns(); }, []);
+  useEffect(() => {
+    fetchRuns();
+    // Fallback place for Country/City defaults when the profile doc hasn't
+    // synced a location yet (written by the geocode cache after each run).
+    getLastKnownPlace().then(setLastPlace).catch(() => {});
+  }, []);
 
-  const fetchAndGroupRuns = async () => {
+  const fetchRuns = async () => {
     try {
-      // The directory (users/{uid} → { displayName, photoURL }) is cached for
-      // an hour, so profile lookups don't cost reads on every visit.
-      const [snapshot, directory] = await Promise.all([
+      // One full runs fetch serves all three scopes (filtering is local), and
+      // the users directory (names/photos) is cached for an hour — switching
+      // tabs costs zero extra Firestore reads.
+      const [snapshot, userDirectory] = await Promise.all([
         getDocs(collection(db, 'runs')),
         getUserDirectory(),
       ]);
-      const runs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      const grouped = {};
-      runs.forEach(run => {
-        const uid = run.userId || 'Unknown';
-        if (!grouped[uid]) grouped[uid] = { userId: uid, displayName: null, totalArea: 0, totalDistance: 0, runCount: 0 };
-        // Denormalized name on the run doc is the fallback; legacy runs'
-        // userId already IS the friendly Runner-XXXX.
-        if (run.displayName) grouped[uid].displayName = run.displayName;
-        grouped[uid].totalArea += run.area || 0;
-        grouped[uid].totalDistance += run.distance || 0;
-        grouped[uid].runCount += 1;
-      });
-      for (const player of Object.values(grouped)) {
-        const entry = directory[player.userId];
-        if (entry?.displayName) player.displayName = entry.displayName;
-        player.photoURL = entry?.photoURL ?? null;
-      }
-      setPlayers(Object.values(grouped).sort((a, b) => b.totalArea - a.totalArea));
+      setRuns(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setDirectory(userDirectory);
     } catch (error) {
       console.error('Error fetching leaderboard:', error);
     } finally {
       setLoading(false);
     }
   };
+
+  // The user's own place decides what "Country" and "City" mean for them.
+  const myPlace = profile?.country ? profile : lastPlace;
+
+  const players = useMemo(() => {
+    let scoped = runs;
+    if (scope === 'country') {
+      if (!myPlace?.country) return [];
+      scoped = runs.filter(r => r.country === myPlace.country);
+    } else if (scope === 'city') {
+      if (!myPlace?.city) return [];
+      scoped = runs.filter(r => r.country === myPlace.country && r.city === myPlace.city);
+    }
+
+    const grouped = {};
+    scoped.forEach(run => {
+      const uid = run.userId || 'Unknown';
+      if (!grouped[uid]) grouped[uid] = { userId: uid, displayName: null, totalArea: 0, totalDistance: 0, runCount: 0 };
+      // Denormalized name on the run doc is the fallback; legacy runs'
+      // userId already IS the friendly Runner-XXXX.
+      if (run.displayName) grouped[uid].displayName = run.displayName;
+      grouped[uid].totalArea += run.area || 0;
+      grouped[uid].totalDistance += run.distance || 0;
+      grouped[uid].runCount += 1;
+    });
+    for (const player of Object.values(grouped)) {
+      const entry = directory[player.userId];
+      if (entry?.displayName) player.displayName = entry.displayName;
+      player.photoURL = entry?.photoURL ?? null;
+    }
+    return Object.values(grouped).sort((a, b) => b.totalArea - a.totalArea);
+  }, [runs, directory, scope, myPlace]);
+
+  // Firestore stores the ISO code; the friendly country name only lives in
+  // the local geocode cache — use it for copy when it matches.
+  const countryLabel = myPlace?.countryName
+    || (lastPlace && lastPlace.country === myPlace?.country ? lastPlace.countryName : null)
+    || myPlace?.country;
+  const placeLabel = scope === 'city' ? myPlace?.city : countryLabel;
+
+  const subtitle = scope === 'global'
+    ? 'Most territory captured 🏴'
+    : placeLabel
+      ? `Top runners in ${placeLabel} 🏴`
+      : 'Most territory captured 🏴';
 
   const formatArea = (sqm) => {
     if (!sqm) return '0 m²';
@@ -120,6 +167,38 @@ export default function LeaderboardScreen({ navigation }) {
     );
   };
 
+  // Scoped tabs have two flavors of empty: "we don't know where you are yet"
+  // (no run with a resolved location) and "your place has no runs yet".
+  const renderEmpty = () => {
+    if (scope !== 'global' && !(scope === 'city' ? myPlace?.city : myPlace?.country)) {
+      return (
+        <View style={styles.centered}>
+          <Text style={styles.emptyEmoji}>📍</Text>
+          <Text style={styles.emptyText}>Where do you run?</Text>
+          <Text style={styles.emptySubText}>
+            Finish a run to unlock {scope === 'city' ? 'city' : 'country'} rankings.
+          </Text>
+        </View>
+      );
+    }
+    if (scope !== 'global') {
+      return (
+        <View style={styles.centered}>
+          <Text style={styles.emptyEmoji}>🏴</Text>
+          <Text style={styles.emptyText}>Be the first runner in {placeLabel}!</Text>
+          <Text style={styles.emptySubText}>No territory captured here yet.</Text>
+        </View>
+      );
+    }
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.emptyEmoji}>🏆</Text>
+        <Text style={styles.emptyText}>No runs yet!</Text>
+        <Text style={styles.emptySubText}>Complete a run to appear here.</Text>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle={theme.statusBarStyle} backgroundColor={theme.bg} />
@@ -127,7 +206,31 @@ export default function LeaderboardScreen({ navigation }) {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>Leaderboard</Text>
-        <Text style={styles.subtitle}>Most territory captured 🏴</Text>
+        <Text style={styles.subtitle}>{subtitle}</Text>
+      </View>
+
+      {/* Scope selector */}
+      <View style={styles.scopeRow}>
+        <View style={styles.scopeControl} accessibilityRole="tablist">
+          {SCOPES.map((option) => {
+            const selected = scope === option.value;
+            return (
+              <TouchableOpacity
+                key={option.value}
+                style={[styles.scopeOption, selected && styles.scopeOptionActive]}
+                onPress={() => setScope(option.value)}
+                activeOpacity={0.7}
+                accessibilityRole="tab"
+                accessibilityLabel={`${option.label} leaderboard`}
+                accessibilityState={{ selected }}
+              >
+                <Text style={[styles.scopeText, selected && styles.scopeTextActive]}>
+                  {option.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
       </View>
 
       {loading ? (
@@ -136,11 +239,7 @@ export default function LeaderboardScreen({ navigation }) {
           <Text style={styles.loadingText}>Loading...</Text>
         </View>
       ) : players.length === 0 ? (
-        <View style={styles.centered}>
-          <Text style={styles.emptyEmoji}>🏆</Text>
-          <Text style={styles.emptyText}>No runs yet!</Text>
-          <Text style={styles.emptySubText}>Complete a run to appear here.</Text>
-        </View>
+        renderEmpty()
       ) : (
         <FlatList
           data={players}
@@ -177,6 +276,40 @@ const createStyles = (t) => StyleSheet.create({
     color: t.textMuted,
     fontWeight: '500',
     marginTop: 2,
+  },
+  scopeRow: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  scopeControl: {
+    flexDirection: 'row',
+    backgroundColor: t.surfaceAlt,
+    borderRadius: 12,
+    padding: 3,
+    gap: 2,
+  },
+  scopeOption: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 9,
+    alignItems: 'center',
+  },
+  scopeOptionActive: {
+    backgroundColor: t.surface,
+    shadowColor: t.shadowSoft,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  scopeText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: t.textDim,
+  },
+  scopeTextActive: {
+    color: t.primary,
+    fontWeight: '700',
   },
   list: {
     paddingHorizontal: 16,

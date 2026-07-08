@@ -1,11 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert } from 'react-native';
 import { onAuthStateChanged } from 'firebase/auth';
 import {
   auth, ensureSignedIn, ensureUserProfile, fetchProfile, updateProfileFields,
-  peekGuestSession, dropGuestSession, guestHasData, importGuestData,
 } from '../firebase';
-import { useNotification } from '../NotificationContext';
 import { invalidateUserDirectory } from '../lib/userDirectory';
 
 // App-wide identity: the Firebase user plus their users/{uid} profile doc.
@@ -24,7 +21,6 @@ const AuthContext = createContext({
 });
 
 export function AuthProvider({ children }) {
-  const { notify } = useNotification();
   // undefined = still restoring the persisted session; null = signed out.
   const [user, setUser] = useState(undefined);
   const [profile, setProfile] = useState(null);
@@ -34,7 +30,6 @@ export function AuthProvider({ children }) {
   // Guard against out-of-order async resolutions when auth switches fast
   // (guest → Google fires two state changes back to back).
   const seqRef = useRef(0);
-  const importPromptBusyRef = useRef(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (nextUser) => {
@@ -51,45 +46,12 @@ export function AuthProvider({ children }) {
       } catch (e) {
         if (seqRef.current === seq) setProfile(null);
       }
-      if (!nextUser.isAnonymous) maybeOfferGuestImport(nextUser);
+      // No guest-data import here: migrating doc ownership needed a Cloud
+      // Function, and the project stays on the Spark plan. SignInScreen warns
+      // guests that signing in starts a fresh account.
     });
     return unsubscribe;
   }, []);
-
-  // "Import my guest data?" — offered once, right after a guest upgrades to a
-  // real account, and only when the guest identity actually owns docs.
-  const maybeOfferGuestImport = async (realUser) => {
-    const guest = peekGuestSession();
-    if (!guest || guest.uid === realUser.uid || importPromptBusyRef.current) return;
-    importPromptBusyRef.current = true;
-    try {
-      if (!(await guestHasData(guest))) {
-        dropGuestSession();
-        return;
-      }
-      Alert.alert(
-        'Import your guest data?',
-        'Your runs and territories from the guest session can be moved to this account.',
-        [
-          { text: 'Not now', style: 'cancel', onPress: () => dropGuestSession() },
-          {
-            text: 'Import',
-            onPress: async () => {
-              try {
-                await importGuestData(guest);
-                invalidateUserDirectory();
-                notify.success('Guest data imported!');
-              } catch (error) {
-                notify.error(`Import failed: ${error?.message ?? 'try again later.'}`);
-              }
-            },
-          },
-        ],
-      );
-    } finally {
-      importPromptBusyRef.current = false;
-    }
-  };
 
   const continueAsGuest = async () => {
     // ensureSignedIn signs in anonymously; onAuthStateChanged does the rest.

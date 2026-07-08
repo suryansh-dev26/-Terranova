@@ -6,14 +6,5 @@ module.exports = ({ config }) => ({
   plugins: [
     ...(config.plugins || []),
     '@maplibre/maplibre-react-native',
-    [
-      'expo-image-picker',
-      {
-        // Avatar uploads only — no camera access requested.
-        photosPermission: 'RunRealm uses your photo library so you can pick a profile picture.',
-        cameraPermission: false,
-        microphonePermission: false,
-      },
-    ],
   ],
 });

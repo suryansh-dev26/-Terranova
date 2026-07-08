@@ -1,6 +1,12 @@
 # RunRealm3 Security Model
 
-Last updated: 2026-07 (real accounts: Google / email / guest).
+Last updated: 2026-07 (Spark-plan refactor: no Cloud Functions, no Storage).
+
+**Plan constraint:** the project runs on the Firebase Spark (free) plan.
+There are no Cloud Functions and no Firebase Storage — everything the app
+does happens client-side under Firestore security rules. Features that
+require a server (push notifications, guest-data migration, server-side
+anti-cheat) are disabled or deferred until a Blaze upgrade.
 
 ## Identity
 
@@ -16,12 +22,11 @@ chars). Names live in `users/{uid}.displayName` and are denormalized onto new
 run/territory docs; leaderboards read names/photos from a cached `users`
 directory.
 
-**Guest → account upgrade:** when a guest signs in with a real account, the
-client offers to import the guest's data. The `migrateGuestData` Cloud
-Function requires the caller to present the guest session's still-valid ID
-token as proof of ownership (verified with the Admin SDK, and the token must
-be from an anonymous session) — a caller can never migrate an arbitrary uid's
-data. After migration the guest auth account is deleted.
+**Guest → account upgrade:** signing in from a guest session starts a fresh
+account. There is **no data migration** — rewriting doc ownership safely
+requires the Admin SDK (a Cloud Function), which the Spark plan rules out.
+The sign-in screen warns guests that their runs stay with the old
+Runner-XXXX identity before they proceed.
 
 **Migration:** installs that predate auth had a self-assigned `Runner-XXXX` in
 AsyncStorage (key `userId`). On the first authenticated launch that name is
@@ -35,30 +40,30 @@ until a one-off admin migration rewrites old docs.
 
 | Path | read | create | update | delete |
 |---|---|---|---|---|
-| `runs/{id}` | public | owner only, validated fields | never | never |
+| `runs/{id}` | public | owner only, validated fields | never | owner only |
 | `territories/{id}` | public | owner only, validated fields | any signed-in user, **shrink-only**, owner immutable | any signed-in user |
-| `users/{uid}` | public | owner only | owner only | never |
+| `users/{uid}` | public | owner only | owner only | owner only |
 | everything else | deny | deny | deny | deny |
+
+Owner-delete on runs and the profile doc exists for one reason: the in-app
+"delete my account and data" purge runs client-side (no Cloud Functions).
+Nobody can edit a run after the fact, and nobody can touch anyone else's
+history.
 
 Field validation on create:
 
 - `runs`: exactly `userId, route, distance, area, time, createdAt`
-  (+ optional `displayName`); `route` capped at 10 000 points; `distance`
-  0–10⁸ m; `area` 0–10¹⁰ m²; `time` 0–10⁶ s; `createdAt` must be the server
-  timestamp. Runs are append-only — no client can edit or delete a workout
-  record after the fact.
+  (+ optional `displayName`, `country` ≤3, `region` ≤100, `city` ≤100);
+  `route` capped at 10 000 points; `distance` 0–10⁸ m; `area` 0–10¹⁰ m²;
+  `time` 0–10⁶ s; `createdAt` must be the server timestamp. Runs can never
+  be edited — only owner-deleted (data-deletion right).
 - `territories`: exactly `userId, polygon, area, createdAt` (+ optional
   `displayName`); polygon ring 4–10 000 points; `area` 0–10¹⁰;
   server timestamp enforced.
 - `users`: only `displayName` (1–50 chars), `email` (string, ≤254, writable
-  only by the owner like every profile field), `photoURL` (string, ≤500),
-  `createdAt`, `pushToken`.
-
-### Storage (`storage.rules`)
-
-Only `users/{uid}/avatar.jpg` exists: owner-writable (auth required, <5 MB,
-`image/*` content type), publicly readable (avatars render on the
-leaderboard). Every other path is denied.
+  only by the owner like every profile field), `photoURL` (string, ≤500 —
+  the Google account photo; there is no Firebase Storage / in-app upload),
+  `createdAt`, and location (`country`/`region`/`city`).
 
 ### Why territory update/delete is not owner-only
 
@@ -86,29 +91,33 @@ only). See the roadmap, Prompt E.
 |---|---|
 | Unauthenticated read/write via leaked web API key | **Blocked** — all writes require auth; non-game paths default-deny. The `apiKey` in `firebase.js` is a project identifier, not a secret; rules are the boundary. |
 | Spoofing another user's `userId` on runs/territories | **Blocked** — `request.auth.uid` must equal the doc's `userId` on create. |
-| Editing/deleting other users' run history | **Blocked** — runs are append-only for everyone. |
+| Editing/deleting other users' run history | **Blocked** — runs are never editable, and only the owner may delete their own. |
 | Tampering with profiles / push tokens | **Blocked** — `users/{uid}` writable only by its owner. |
 | Growing your own territory by direct doc update | **Blocked** — updates are shrink-only; expansion requires creating a new owned territory via a run. |
 | Fabricated GPS routes / impossible areas (cheating) | **Partially mitigated** — field bounds only. Full mitigation = server-side route validation (planned). |
-| Deleting enemy territory without a legitimate overlap | **Accepted for now** — requires a signed-in client; server-side conflict resolution will close it (planned). |
-| Push notification abuse | Cloud Function reads `users/{uid}.pushToken` (owner-written) and only fires on actual territory deletion. |
+| Deleting enemy territory without a legitimate overlap | **Accepted for now** — requires a signed-in client; server-side conflict resolution will close it (needs Blaze). |
+| Push notification abuse | **N/A** — push is removed on the Spark plan; territory attacks surface as in-app alerts while the app is open. |
 
 ## Data deletion
 
-Profile → "Delete my account and data" calls the `deleteUserData` callable
-Cloud Function (auth required). It purges the caller's runs, territories, and
-`users/{uid}` doc (including subcollections), then deletes the anonymous auth
-account; the app signs back in as a brand-new runner. Legacy pre-auth docs
-(keyed by the old Runner-XXXX id) are purged too, but only when the caller's
-`displayName` proves ownership of that id. This satisfies the Play Store
-data-deletion requirement; see docs/privacy.md.
+Profile → "Delete my account and data" runs entirely client-side: batched
+deletes of the caller's runs and territories (owner-delete rules), then the
+`users/{uid}` doc, then the Firebase Auth account itself. If Firebase demands
+a recent sign-in before deleting the auth record, the data is still purged
+and the user is told to sign in once more to finish. This satisfies the Play
+Store data-deletion requirement; see docs/privacy.md.
+
+Known gap: docs keyed by a *pre-auth* legacy `Runner-XXXX` id (not a real
+uid) can't be deleted by rules-constrained clients — those requests go
+through the privacy-policy contact email.
 
 ## Operational notes
 
 - Deploy rules with `firebase deploy --only firestore:rules` (wired in
   `firebase.json`).
-- Cloud Functions use the Admin SDK and bypass rules by design; keep them
-  minimal and audited.
+- No Cloud Functions are deployed. If any return (push, anti-cheat,
+  migration), they use the Admin SDK and bypass rules — keep them minimal
+  and audited, and tighten territory update/delete to owner-or-function.
 - Auth persistence uses AsyncStorage — clearing app storage mints a fresh
   anonymous uid (old territory is orphaned but the old displayName is
   re-adopted if the legacy key survives). Account linking (e.g. Google) would

@@ -4,7 +4,9 @@ import * as Location from 'expo-location';
 import {
   collection, addDoc, deleteDoc, doc, updateDoc, serverTimestamp,
 } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, updateProfileFields } from '../firebase';
+import { getPlaceForCoord } from '../lib/geocode';
+import { placeDocFields } from '../lib/place';
 import { useAuth } from '../auth/AuthProvider';
 import { useNotification } from '../NotificationContext';
 import {
@@ -166,12 +168,21 @@ export default function useRunSession({ territories, cameraRef, lastRegionRef })
       setSaveStatus('Saving...');
       const { uid, name } = identityRef.current;
       if (!uid) throw new Error('Not signed in');
+      // Where did this run happen? Powers the country/city leaderboards.
+      // Cached per ~1 km grid cell; resolves to null offline (location is
+      // optional on the doc, so the save still goes through).
+      const place = await getPlaceForCoord(coords[coords.length - 1]);
+      const placeFields = placeDocFields(place);
       await addDoc(collection(db, 'runs'), {
         userId: uid, displayName: name, time: seconds, route: coords,
         distance: Math.round(distanceMeters),
         area: Math.round(areaSqMeters),
         createdAt: serverTimestamp(),
+        ...placeFields,
       });
+      // Mirror onto users/{uid} so the leaderboard can default to the
+      // runner's own country/city (also refreshes the cached profile).
+      if (place) updateProfileFields(placeFields).catch(() => {});
 
       if (coords.length >= 3) {
         const savedTerritories = territoriesRef.current ?? [];

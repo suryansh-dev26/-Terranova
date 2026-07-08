@@ -9,6 +9,7 @@ import useRunSession, { LOOP_MIN_POINTS } from '../hooks/useRunSession';
 import MapCanvas from '../components/MapCanvas';
 import BottomSheet from '../components/BottomSheet';
 import { useTheme } from '../theme/ThemeProvider';
+import { useNotification } from '../NotificationContext';
 
 const MAP_TYPE_CYCLE = ['standard', 'satellite', 'terrain'];
 const mapTypeLabel = (t) =>
@@ -32,6 +33,47 @@ export default function HomeScreen() {
     userId, displayName, start, stop,
   } = useRunSession({ territories: savedTerritories, cameraRef, lastRegionRef });
 
+  const { notify } = useNotification();
+
+  // ── In-app "territory attacked" alert ──
+  // Push notifications are off (Spark plan — no Cloud Functions). While the
+  // app is open, this diff of the shared territory feed replaces them: if one
+  // of MY territories disappears or shrinks, someone attacked it. Real push
+  // can be re-enabled by upgrading to Blaze and restoring the
+  // notifyTerritoryAttack Cloud Function (see git history for its code).
+  const attackStateRef = useRef({ userId: null, suppress: false });
+  attackStateRef.current = { userId, suppress: isRunning || saveStatus === 'Saving...' };
+  const ownTerritoriesRef = useRef(null);
+  const skipNextDiffRef = useRef(false);
+
+  // Our own save rearranges our territories (delete + merged re-add); the
+  // first snapshot after it completes reflects that, not an enemy attack.
+  useEffect(() => {
+    if (saveStatus && saveStatus !== 'Saving...') skipNextDiffRef.current = true;
+  }, [saveStatus]);
+
+  const detectTerritoryAttack = (territories) => {
+    const { userId: uid, suppress } = attackStateRef.current;
+    if (!uid) return;
+    const mine = new Map(
+      territories.filter(t => t.userId === uid).map(t => [t.id, t.area ?? 0]),
+    );
+    const previous = ownTerritoriesRef.current;
+    ownTerritoriesRef.current = mine;
+    if (!previous || suppress) return;
+    if (skipNextDiffRef.current) { skipNextDiffRef.current = false; return; }
+    for (const [id, prevArea] of previous) {
+      if (!mine.has(id)) {
+        notify.warning('⚔️ Your territory was captured! Run it back!');
+        return;
+      }
+      if ((mine.get(id) ?? 0) < prevArea) {
+        notify.warning('✂️ Someone cut into your territory!');
+        return;
+      }
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     // Tracks the last applied data so the polling fallback below doesn't cause
@@ -53,6 +95,7 @@ export default function HomeScreen() {
       if (sig === lastSig) return; // no change → skip update
       lastSig = sig;
       setSavedTerritories(data);
+      detectTerritoryAttack(data);
     };
 
     // Realtime listener — works on iOS. On Android the Firestore "Listen"

@@ -5,11 +5,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as ImagePicker from 'expo-image-picker';
 import { collection, getDocs, query, where } from 'firebase/firestore';
-import { db, uploadAvatar, signOutUser, deleteAccountAndData } from './firebase';
+import { db, signOutUser, deleteAccountAndData } from './firebase';
 import { getUserColor } from './lib/geo';
-import { invalidateUserDirectory } from './lib/userDirectory';
 import { useAuth } from './auth/AuthProvider';
 import { useTheme } from './theme/ThemeProvider';
 import { useNotification } from './NotificationContext';
@@ -24,7 +22,7 @@ const THEME_OPTIONS = [
 export default function ProfileScreen() {
   const { theme, preference, setPreference } = useTheme();
   const { notify } = useNotification();
-  const { user, profile, isGuest, refreshProfile, applyProfileUpdate, setShowSignIn } = useAuth();
+  const { user, profile, isGuest, applyProfileUpdate, setShowSignIn } = useAuth();
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   const userId = user?.uid ?? null;
@@ -34,7 +32,6 @@ export default function ProfileScreen() {
   const [recentRuns, setRecentRuns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
-  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [savingName, setSavingName] = useState(false);
@@ -109,32 +106,8 @@ export default function ProfileScreen() {
   };
 
   // ── Profile editing ──
-
-  const changePhoto = async () => {
-    try {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) {
-        notify.error('Photo access denied — allow it in Settings to change your picture.');
-        return;
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.7,
-      });
-      if (result.canceled || !result.assets?.length) return;
-      setUploadingPhoto(true);
-      await uploadAvatar(result.assets[0].uri);
-      await refreshProfile();
-      invalidateUserDirectory();
-      notify.success('Profile photo updated!');
-    } catch (error) {
-      notify.error(`Couldn't update photo: ${error?.message ?? 'try again.'}`);
-    } finally {
-      setUploadingPhoto(false);
-    }
-  };
+  // No photo upload: Firebase Storage needs the Blaze plan, so the avatar is
+  // the Google account photo (photoURL) or the color-letter fallback.
 
   const openNameEditor = () => {
     setNameDraft(displayName ?? '');
@@ -176,9 +149,10 @@ export default function ProfileScreen() {
     );
   };
 
-  // Play Store data-deletion requirement: two-step confirm, then the
-  // deleteUserData Cloud Function purges everything server-side. The auth
-  // gate takes over (sign-in screen) once the account is gone.
+  // Play Store data-deletion requirement: two-step confirm, then a fully
+  // client-side purge (batched deletes under owner-delete rules — no Cloud
+  // Functions on the Spark plan). The auth gate takes over (sign-in screen)
+  // once the account is gone.
   const confirmDeleteAccount = () => {
     Alert.alert(
       'Delete account and data?',
@@ -193,8 +167,14 @@ export default function ProfileScreen() {
   const deleteAccount = async () => {
     try {
       setDeleting(true);
-      await deleteAccountAndData();
-      notify.success('All your data has been deleted.');
+      const { authDeleted } = await deleteAccountAndData();
+      if (authDeleted) {
+        notify.success('All your data has been deleted.');
+      } else {
+        // Data is purged, but Firebase wanted a recent sign-in before
+        // deleting the auth record itself.
+        notify.success('Your data is deleted. Sign in once more to finish removing the account.');
+      }
     } catch (error) {
       notify.error(`Couldn't delete data: ${error?.message ?? 'try again later.'}`);
       setDeleting(false);
@@ -265,26 +245,13 @@ export default function ProfileScreen() {
       >
         {/* Identity */}
         <View style={styles.identity}>
-          <TouchableOpacity
-            onPress={changePhoto}
-            disabled={uploadingPhoto}
-            activeOpacity={0.8}
-            accessibilityRole="button"
-            accessibilityLabel="Change profile photo"
-          >
-            {profile?.photoURL ? (
-              <Image source={{ uri: profile.photoURL }} style={styles.avatarImage} />
-            ) : (
-              <View style={[styles.avatar, { backgroundColor: avatarColor }]}>
-                <Text style={styles.avatarText}>{initial}</Text>
-              </View>
-            )}
-            <View style={styles.avatarEditBadge}>
-              {uploadingPhoto
-                ? <ActivityIndicator size="small" color={theme.onPrimary} />
-                : <Text style={styles.avatarEditGlyph}>✎</Text>}
+          {profile?.photoURL ? (
+            <Image source={{ uri: profile.photoURL }} style={styles.avatarImage} />
+          ) : (
+            <View style={[styles.avatar, { backgroundColor: avatarColor }]}>
+              <Text style={styles.avatarText}>{initial}</Text>
             </View>
-          </TouchableOpacity>
+          )}
 
           <TouchableOpacity
             onPress={openNameEditor}
@@ -517,24 +484,6 @@ const createStyles = (t) => {
       borderRadius: 42,
       marginBottom: 12,
       backgroundColor: t.surfaceAlt,
-    },
-    avatarEditBadge: {
-      position: 'absolute',
-      right: -2,
-      bottom: 10,
-      width: 26,
-      height: 26,
-      borderRadius: 13,
-      backgroundColor: t.primary,
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderWidth: 2,
-      borderColor: t.bg,
-    },
-    avatarEditGlyph: {
-      color: t.onPrimary,
-      fontSize: 12,
-      fontWeight: '700',
     },
     avatarText: {
       fontSize: 36,

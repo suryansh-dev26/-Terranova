@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator, KeyboardAvoidingView, Platform, StatusBar, StyleSheet,
+  ActivityIndicator, Alert, KeyboardAvoidingView, Platform, StatusBar, StyleSheet,
   Text, TextInput, TouchableOpacity, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -33,7 +33,7 @@ const authErrorMessage = (error) =>
 
 // Own component so the useIdTokenAuthRequest hook only runs when client ids
 // are configured (hooks can't be called conditionally, components can).
-function GoogleSignInButton({ config, busy, setBusy, styles }) {
+function GoogleSignInButton({ config, busy, setBusy, styles, guard }) {
   const { notify } = useNotification();
   const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
     clientId: config.webClientId || undefined,
@@ -68,7 +68,7 @@ function GoogleSignInButton({ config, busy, setBusy, styles }) {
   return (
     <TouchableOpacity
       style={[styles.primaryButton, (!request || busy) && styles.buttonDisabled]}
-      onPress={() => promptAsync()}
+      onPress={() => guard(() => promptAsync())}
       disabled={!request || busy}
       activeOpacity={0.85}
       accessibilityRole="button"
@@ -95,7 +95,26 @@ export default function SignInScreen() {
   // Screen doubles as the "upgrade account" screen for signed-in guests.
   const isUpgrade = Boolean(user);
 
-  const submitEmail = async () => {
+  // No guest-data migration on the Spark plan: signing in replaces the
+  // anonymous session with a fresh account, so guests confirm first.
+  const confirmIfGuest = (proceed) => {
+    if (!user?.isAnonymous) {
+      proceed();
+      return;
+    }
+    Alert.alert(
+      'Start a fresh account?',
+      'Signing in will start a fresh account — your guest runs stay with your Runner-XXXX ID and can\'t be moved over.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Continue', onPress: proceed },
+      ],
+    );
+  };
+
+  const submitEmail = () => confirmIfGuest(doSubmitEmail);
+
+  const doSubmitEmail = async () => {
     if (!email.trim() || !password) {
       notify.error('Enter an email and password.');
       return;
@@ -170,6 +189,7 @@ export default function SignInScreen() {
                 busy={busy}
                 setBusy={setBusy}
                 styles={styles}
+                guard={confirmIfGuest}
               />
             ) : (
               <View style={[styles.primaryButton, styles.buttonDisabled]}>

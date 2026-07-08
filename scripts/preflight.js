@@ -17,7 +17,7 @@ const BLOCKED_PERMISSIONS = [
 ];
 
 // App source that ships in the JS bundle (console.log check). Tests, scripts,
-// docs, and Cloud Functions (server-side) are exempt.
+// and docs are exempt.
 const APP_SOURCE_DIRS = ['screens', 'components', 'hooks', 'theme', 'lib', 'auth'];
 const APP_SOURCE_FILES = [
   'App.js', 'firebase.js', 'NotificationContext.js',
